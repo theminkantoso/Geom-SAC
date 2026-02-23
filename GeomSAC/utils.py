@@ -1,3 +1,7 @@
+import copy
+from rdkit import Chem
+
+
 def convert_radical_electrons_to_hydrogens(mol):
     m = copy.deepcopy(mol)
     if Chem.Descriptors.NumRadicalElectrons(m) == 0:  # not a radical

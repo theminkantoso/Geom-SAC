@@ -1,0 +1,485 @@
+## Tổng quan Geom-SAC (tiếng Việt)
+
+### TL;DR
+
+- **Bạn đang có gì**: Một agent SAC + GNN sinh / tối ưu phân tử 3D, code đã viết sẵn.
+- **Bạn điều khiển được gì**: Tập SMILES đầu vào, phân tử ref, không gian nguyên tử/bond, tham số SAC, số episode, ngưỡng QED, v.v.
+- **Bạn thu được gì**: Một tập phân tử mới (SMILES) hợp lệ hoá học, QED cao, có thể gần giống ref.
+- **File này giúp gì**: Giải thích pipeline trực quan, các edge case hoá học, và liệt kê các nút bấm (hyper-parameters) quan trọng.
+
+---
+
+### 1. Mục tiêu của project
+
+- **Geom-SAC** là implementation của bài báo *“Geometric Multi-Discrete Soft Actor Critic With Applications in De Novo Drug Design”*.
+- **Mục tiêu**: dùng **deep reinforcement learning + GNN** để:
+  - Sinh **phân tử mới** (de novo design), hoặc
+  - **Tối ưu** phân tử có sẵn (lead optimization),
+  - Trong khi đảm bảo phân tử **drug-like (QED cao)**, **hợp lệ hóa học**, và (tuỳ cấu hình) **giống một phân tử tham chiếu** (`reference_mol`).
+
+---
+
+### 2. Input, output và kịch bản “đa phân tử”
+
+- **Input chính**:
+  - **Tập phân tử ban đầu** (SMILES) – trong code hiện tại chỉ có 1 SMILES trong list, nhưng có thể mở rộng thành nhiều.
+  - **Một phân tử tham chiếu** (`reference_mol`) – cũng cho dưới dạng **SMILES**, sau đó chuyển thành `Chem.Mol` bằng `Chem.MolFromSmiles(...)`.
+  - Các hyper-parameters: `max_atom`, `max_action`, số episode (`n_episodes`), v.v.
+
+- **Cách dùng khi có nhiều phân tử đầu vào**:
+  - Ta có một **list SMILES**: `[A, B, C, ...]`.
+  - Mỗi **episode**: `np.random.choice` chọn **ngẫu nhiên 1 phân tử** trong list làm **điểm xuất phát**.
+  - Agent chỉnh sửa phân tử này qua nhiều bước → nhận được **1 phân tử cuối** cho episode đó.
+  - Chạy `n_episodes` → có tối đa `n` phân tử cuối khác nhau (mỗi episode một phân tử).
+
+- **Output**:
+  - `mols`: danh sách SMILES của **phân tử cuối** mỗi episode.
+  - `scores`: tổng reward của từng episode.
+  - `top`: những phân tử **“tốt” vượt ngưỡng QED** (ví dụ `Chem.QED.qed(...) > 0.79`), coi như **các ứng viên lead**.
+
+> Tức là: **m phân tử đầu vào (pool), n episode → tối đa n phân tử đầu ra**, mỗi phân tử đầu ra được sinh ra từ một trong các phân tử đầu vào, thông qua RL.
+
+---
+
+### 3. Ba bước core của pipeline
+
+#### 3.1. Bước 1 – Môi trường `MolecularGraphEnv` (file `MolGraphEnv.py`)
+
+- **Trạng thái (state)**: một phân tử hiện tại, biểu diễn dưới dạng:
+  - **Đồ thị phân tử**: node = nguyên tử, edge = liên kết.
+  - Node features: loại nguyên tử, số hiệu nguyên tử, aromatic hay không, hybridization, degree, số H, v.v.
+  - Edge features: loại liên kết (single/double/triple/aromatic).
+  - Dạng trả về: `torch_geometric.data.Data(x, edge_index, edge_attr)` (framework `'pyg'`).
+  - Có thử embed 3D (AddHs + `AllChem.EmbedMolecule` + `MMFFOptimizeMolecule`); nếu lỗi có thể đặt `self.stop = True`.
+
+- **Action space**:
+  - Được định nghĩa là **`gym.spaces.MultiDiscrete`** với 5 thành phần:
+    - `a0`: chỉ số **loại nguyên tử** mới (`possible_atom_types`).
+    - `a1`: chỉ số **node thứ 1** (chỉ số nguyên tử trong phân tử hiện tại).
+    - `a2`: chỉ số **node thứ 2**.
+    - `a3`: chỉ số **loại liên kết** (`possible_bond_types`: SINGLE, DOUBLE, TRIPLE, AROMATIC).
+    - `a4`: chỉ số **kiểu thao tác**:
+      - `0`: nối các mảnh phân tử (`_connect_mol_frags`),
+      - `1`: thêm liên kết (`_add_bond`),
+      - `2`: đổi loại liên kết (`_alter_bond`),
+      - `3`: xoá liên kết (`_remove_bond`).
+
+- **Một action** là **một vector 5 chiều** `[a0, a1, a2, a3, a4]`, không phải 5 action tách biệt.  
+  → Mỗi bước, agent **chọn 1 tổ hợp cụ thể** của 5 số này.
+
+- **Luồng xử lý trong `step(action)`** (đơn giản hoá):
+  1. **Sao lưu** phân tử cũ: `mol_old = deepcopy(self.mol_g)`.
+  2. **Kiểm tra điều kiện dừng thô**: nếu số bước (`counter`) hoặc số action lỗi (`invalid_actions`) vượt `max_action`, đặt `self.stop = True`.
+  3. Nếu số nguyên tử hiện tại ≤ `max_atom`:
+     - Gọi `_add_atom(a0)` → **luôn thêm 1 nguyên tử mới** (kể cả khi `a4` là remove/alter/connect).
+  4. Tính `node_id_1`, `node_id_2` từ `a1, a2` với một số logic fallback khi index lệch.
+  5. Tuỳ `a4`:
+     - `1` → `_add_bond(action, node_id_1, node_id_2)`,
+     - `0` → `_connect_mol_frags()`,
+     - `2` → `_alter_bond(action, node_id_1, node_id_2)`,
+     - `3` → `_remove_bond(node_id_1, node_id_2)`,
+     - Mỗi thao tác đều được bọc trong `try/except`: nếu lỗi → tăng `invalid_actions`, rollback về `mol_old` hoặc chọn mol “tốt nhất” trong `mols` tạm.
+  6. Sau khi thao tác xong, mới **đánh giá**:
+     - `check_valency()`:
+       - Nếu **fail** → phạt reward, rollback về `mol_old`, tăng `invalid_actions`.
+     - `check_chemical_validity()`:
+       - Nếu pass → cộng một phần reward dựa trên QED.
+       - Nếu fail → không rollback trong bước này, nhưng cuối episode sẽ bị phạt nặng hơn.
+     - `check_stereo()` (embed 3D + MMFF):
+       - Nếu fail → phạt reward, rollback về `mol_old`, tăng `invalid_actions`.
+     - Nếu có `reference_mol` và `target_sim` → cộng thêm phần reward dựa trên độ giống (từ Morgan fingerprint + Tanimoto).
+  7. Nếu `self.stop` hoặc `counter >= max_action`:
+     - Tính **reward cuối** (kết hợp validity, QED, cấu trúc 3D, similarity) và trả `done=True`.
+     - Reset lại một số biến đếm cho episode mới.
+  8. Ngược lại:
+     - Episode tiếp tục, trả về `(observation, reward_step, done=False, info)`.
+
+#### 3.2. Bước 2 – Agent SAC + GNN (file `agent.py`, `neural_networks.py`)
+
+- **GraphEncoder**:
+  - Nhận `state` (đồ thị PyG) → qua `GAT` rồi `GIN` → global pooling → MLP → ra **vector embedding** kích thước cố định (ví dụ 128).
+  - Đây là biểu diễn của phân tử mà các mạng tiếp theo (actor/critic) sử dụng.
+
+- **Mạng trong SAC**:
+  - `StateValueNetwork` (`V(s)`): ước lượng giá trị của state.
+  - `ActionValueNetwork` (`Q(s,a)`): 2 mạng độc lập (`critic_q_1`, `critic_q_2`) để dùng `min(Q1, Q2)` như trong SAC chuẩn.
+  - `PolicyNetwork`:
+    - Nhận embedding state → xuất **logits** cho toàn bộ không gian MultiDiscrete (gộp 5 chiều lại).
+    - Dùng `MultiCategoricalDistribution` để sinh ra **xác suất** và **sample action** `[a0, a1, a2, a3, a4]`, kèm theo `log_prob`.
+
+- **Quá trình học (`agent.train()`)**:
+  - Lấy batch `(states, probabilities, rewards, next_states, dones)` từ `ReplayBuffer`.
+  - Cập nhật:
+    - **Q-networks**: MSE giữa `Q(s,a)` và `target_q = r * reward_scale + γ * V_target(s') * (1-done)`.
+    - **V-network**: MSE giữa `V(s)` và `min(Q1, Q2) - log π(a|s)`.
+    - **Policy**: loss dạng SAC, tối ưu trade-off giữa Q và entropy.
+  - Soft update `critic_v_target` với hệ số `tau`.
+
+#### 3.3. Bước 3 – Vòng lặp huấn luyện (file `main.py`)
+
+- Mỗi **episode**:
+  1. Chọn ngẫu nhiên 1 SMILES từ list → `init_mol`.
+  2. Tạo `MolecularGraphEnv(mol_g=init_mol, reference_mol=ref_mol, target_sim=1, max_atom=40, ...)`.
+  3. `state = env.reset(frame_work='pyg')`.
+  4. Encode state bằng `GraphEncoder` → embedding.
+  5. Tạo agent `SoftActorCriticAgent(env, state)`.
+
+- Trong **vòng lặp bước** của episode:
+  1. Agent `select_actions(state)` → `(probabilities, actions, log_p)`.
+  2. `next_state, reward, done, info = env.step(actions[0].detach().cpu().numpy())`.
+  3. Encode `next_state` bằng `GraphEncoder` khác → embedding mới.
+  4. Thêm transition vào buffer: `(state, probabilities, reward, next_state, done)`.
+  5. Gọi `agent.train()`.
+  6. Cập nhật `state = next_state`, cộng dồn `rewards`.
+  7. Nếu `done` → kết thúc episode, lưu:
+     - `scores.append(rewards)`,
+     - SMILES của phân tử cuối vào `mols`,
+     - Nếu QED vượt ngưỡng → cho vào `top`.
+
+---
+
+### 4. Điều kiện dừng của một episode
+
+- Episode dừng khi `env.step` trả `done=True`. Trong code:
+
+- **Hai điều kiện chính**:
+  - **Hết số bước tối đa**:
+    - `self.counter >= self.max_action`.
+  - **Quá nhiều action không hợp lệ**:
+    - `self.invalid_actions > self.max_action`.
+
+> Không có điều kiện “QED đủ cao thì dừng sớm”; dừng hoàn toàn do **giới hạn số bước** và **số lần phạm lỗi**.
+
+---
+
+### 5. Reference molecule và vấn đề “converge”
+
+- `reference_mol` được dùng để tính **độ giống (similarity)** với phân tử hiện tại qua Morgan fingerprint + Tanimoto.
+- Reward có một phần thưởng thêm nếu phân tử hiện tại **gần giống** ref (theo một hàm biến đổi của similarity).
+
+**Hiệu ứng khi dùng chung một ref cho mọi episode**:
+
+- Tất cả các episode đều:
+  - Bắt đầu từ các phân tử khác nhau nhưng
+  - Đều bị **kéo về gần ref** bởi reward.
+
+- **Nguy cơ**:
+  - Agent (một policy dùng chung) có thể học một số **chiến lược “tối ưu” giống nhau** để tăng similarity với ref.
+  - Dần dần nhiều phân tử sinh ra sẽ **giống nhau hơn** (giảm diversity), tất cả tập trung quanh ref.
+
+- Tuy nhiên:
+  - Nhiều điểm xuất phát khác nhau + tính ngẫu nhiên của policy → vẫn có thể sinh ra **nhiều local optimum khác nhau**, không hoàn toàn collapse về 1 phân tử duy nhất.
+  - Không có thành phần reward nào **buộc** các phân tử output phải giống nhau, chỉ là **cùng giống ref**.
+
+> Kết luận: dùng chung ref **có xu hướng làm phân tử “converge” về vùng gần ref**, giảm đa dạng, nhưng không nhất thiết sụp đổ về một cấu trúc duy nhất. Để tăng diversity, cần thêm các term/phương án thưởng phạt về đa dạng.
+
+---
+
+### 6. Cách env xử lý action “sai” và hợp lệ hóa học
+
+- **Không raise exception ra ngoài** cho agent; tất cả được xử lý nội bộ trong `step`:
+  - Thao tác bond (add/alter/remove/connect) được bọc trong `try/except`:
+    - Nếu lỗi → tăng `invalid_actions`, rollback phân tử về `mol_old` (hoặc chọn mol tốt nhất trong danh sách thử nghiệm tạm).
+
+- **Kiểm tra hoá trị (valency)**:
+  - Dùng `Chem.SanitizeMol(..., sanitizeOps=Chem.SanitizeFlags.SANITIZE_PROPERTIES)`.
+  - Nếu fail:
+    - Phạt reward step,
+    - Rollback `self.mol_g = mol_old`,
+    - `invalid_actions += 1`.
+
+- **Kiểm tra hoá học tổng quát (chemical validity)**:
+  - SMILES round-trip: `MolToSmiles` → `MolFromSmiles` → `SanitizeMol`.
+  - Nếu không hợp lệ:
+    - Hàm `check_chemical_validity()` trả `False`,
+    - Không cộng reward QED ở bước đó,
+    - Cuối episode sẽ phạt thêm (giảm `reward_valid`, v.v.),
+    - Không rollback ngay trong `step` chỉ vì chemical validity.
+
+- **Kiểm tra stereo / 3D**:
+  - Thử AddHs, EmbedMolecule, MMFFOptimize:
+    - Nếu tối ưu thành công → coi là stereo/3D ok.
+    - Nếu không → phạt reward, rollback `mol_g` về `mol_old`, tăng `invalid_actions`.
+
+> Tóm lại: env **đẩy mạnh** việc phạt và rollback các action tạo ra trạng thái không hợp lệ (đặc biệt là valency, stereo), nhưng không đảm bảo chặn **toàn bộ** mọi trường hợp vi phạm quy tắc hoá hữu cơ phức tạp; nó dựa nhiều vào khả năng của RDKit.
+
+---
+
+### 7. Thiết kế action và các edge case quan trọng
+
+#### 7.1. Action luôn gồm 5 thành phần
+
+- Một **action** = vector `[a0, a1, a2, a3, a4]`.
+- Ý nghĩa:
+  - `a0`: loại nguyên tử để thêm.
+  - `a1, a2`: 2 node để thao tác liên kết.
+  - `a3`: loại liên kết.
+  - `a4`: kiểu thao tác (connect/add/alter/remove bond).
+
+#### 7.2. Edge case 1 – Luôn “thêm nguyên tử” dù chỉ remove bond
+
+- Trong `step`, **mỗi bước** (miễn là số nguyên tử chưa vượt `max_atom`), env sẽ gọi:
+  - `_add_atom(a0)` trước, **bất kể** `a4` là gì.
+- Ví dụ: `a4 = 3` (remove bond):
+  - Env **vẫn thêm 1 nguyên tử mới** theo `a0`,
+  - Sau đó mới xoá một liên kết giữa `node_id_1` và `node_id_2`.
+- Kết quả:
+  - Có thể xuất hiện **nguyên tử “lơ lửng”** không gắn với ai (isolated atom),
+  - Hoặc tạo thêm fragments mới.
+- Về mặt hoá hữu cơ chuẩn, đây là hành vi **không tự nhiên** (không ai “tự dưng sinh thêm 1 nguyên tử đơn lẻ”), nhưng:
+  - Env dùng **reward + rollback** để trừng phạt các cấu trúc tệ,
+  - Cuối cùng thường chỉ lấy **mảnh lớn nhất/hợp lý nhất** để đánh giá.
+
+#### 7.3. Edge case 2 – Hàm `_connect_mol_frags()`
+
+- Được gọi khi `a4 == 0`.
+- Mục tiêu: **nối các mảnh rời rạc** trong phân tử:
+  1. Tìm các nguyên tử còn “thiếu” valence.
+  2. Xác định các fragment khác nhau.
+  3. Sinh các cặp ứng viên `(node_1, node_2)` thuộc các mảnh khác nhau.
+  4. Thử nối chúng bằng nhiều loại liên kết, embed 3D, tối ưu MMFF.
+  5. Tính QED cho mỗi cấu hình nối, **chọn phân tử có QED cao nhất**.
+  6. Nếu không nối được gì hợp lý → fallback:
+     - Hoặc dùng `get_final_mols(old_mol)` để chọn mảnh lớn nhất,
+     - Hoặc giữ nguyên `self.mol_g`.
+
+> Đây là “cơ chế tự động hàn gắn” các mảnh rời, nhưng cũng là một vùng có thể sinh ra hành vi **không hoàn toàn phản ánh đầy đủ hoá hữu cơ thực tế**, mà là một thoả hiệp cho RL.
+
+---
+
+### 8. Những khác biệt so với hoá hữu cơ “chuẩn”
+
+- **Không có khái niệm nguyên tử “vô duyên”** trong hoá hữu cơ, nhưng env có thể:
+  - Thêm nguyên tử rồi không nối nó với phần còn lại,
+  - Sinh ra nhiều fragment rời.
+- Env cố gắng sửa bằng:
+  - `_connect_mol_frags()` để nối lại,
+  - `get_final_mols` để chỉ lấy **mảnh lớn nhất** khi đánh giá.
+- **Không kiểm soát hết mọi quy tắc**:
+  - Dựa vào RDKit (valency, aromaticity, charge, 3D) nên:
+    - Nhiều trường hợp sai sẽ bị chặn/phạt,
+    - Nhưng không thể khẳng định chặn hết 100% mọi quy tắc hoá hữu cơ tinh vi.
+
+> Tổng thể, đây là một **môi trường RL hoá học thực dụng**, chấp nhận trạng thái trung gian “xấu” miễn là:
+> - Bị phạt đủ mạnh,
+> - Không được chọn làm phân tử cuối,
+> - Và agent học được cách tránh chúng nhờ reward.
+
+---
+
+### 9. Gợi ý nếu muốn “hoá học hơn”
+
+Nếu mục tiêu của bạn là mô phỏng **gần với tư duy hoá hữu cơ** hơn, có thể cân nhắc:
+
+- **Tách riêng** action “thêm nguyên tử” và action “sửa/xoá/nối liên kết”, thay vì luôn thêm nguyên tử mỗi bước.
+- **Rollback mạnh hơn** khi `check_chemical_validity()` fail (hiện tại chỉ ảnh hưởng reward).
+- Thêm **reward/phạt về đa dạng** (diversity) để tránh converge quá nhiều quanh một ref.
+- Bổ sung các chỉ số khác (synthetic accessibility, toxicity, ADMET, v.v.) nếu có model dự đoán.
+
+---
+
+Tài liệu này tóm tắt lại các nội dung đã trao đổi:
+- Cách pipeline hoạt động từ input → env → agent → output.
+- Trường hợp nhiều phân tử đầu vào.
+- Vai trò của `reference_mol` và nguy cơ “converge”.
+- Cách env xử lý action sai, rollback, invalid actions.
+- Chi tiết về cấu trúc action 5 thành phần, các edge case (luôn thêm nguyên tử, nguyên tử lơ lửng, nối fragments).
+- Hạn chế so với hoá hữu cơ “chuẩn” và một số hướng tinh chỉnh.
+
+### 10. Phân loại các tham số có thể tuỳ chỉnh
+
+Để rõ ràng hơn, chia tham số thành 3 nhóm chính: **hoá học**, **ML/RL**, và **pipeline/thực nghiệm**.
+
+#### 10.1. Nhóm tham số **hoá học**
+
+- **Tập phân tử đầu vào** (SMILES):
+  - Quyết định **chemical space ban đầu** mà agent được phép “tối ưu”.
+  - Thay đổi set này = thay bối cảnh hoá học mà RL làm việc.
+
+- **`reference_mol`**:
+  - Phân tử mục tiêu để tính similarity.
+  - Đổi SMILES của ref = đổi **“đích hoá học”** mà agent bị kéo về.
+
+- **`target_sim`**:
+  - Mức độ similarity mục tiêu (ví dụ 1.0 = càng giống ref càng tốt).
+  - Có thể điều chỉnh nếu muốn khuyến khích giống ref vừa phải thay vì giống tuyệt đối.
+
+- **`allowed_atoms`** trong `MolecularGraphEnv`:
+  - Quy định **nguyên tố hoá học nào có thể được thêm** vào phân tử.
+  - Thay đổi list này = mở rộng/thu hẹp loại atoms (ví dụ thêm P, B, siêu nguyên tố…).
+
+- **`max_atom`**:
+  - Số nguyên tử tối đa trong một phân tử.
+  - Liên quan trực tiếp đến:
+    - Độ lớn phân tử (mol weight, độ phức tạp),
+    - Khả năng nhúng 3D, ổn định cấu trúc,
+    - Thời gian tính toán RDKit (embed, MMFF).
+
+- **`reward_type`**:
+  - Hiện đang là `"qed"`, tức reward cuối cùng ưu tiên **QED (drug-likeness)**.
+  - Nếu mở rộng, có thể thêm các kiểu reward khác như logP, activity score, multi-objective, v.v.
+
+- **Các kiểm tra hoá học dùng RDKit** (gián tiếp nhưng quan trọng):
+  - Cách gọi `SanitizeMol`, `EmbedMolecule`, `MMFFOptimizeMolecule`, cách tính QED, cách chọn mảnh lớn nhất (`get_final_mols`) – đều là **lớp “hoá học”** mà bạn có thể chỉnh nếu đổi tiêu chí “phân tử tốt”.
+
+#### 10.2. Nhóm tham số **ML/RL (học máy, học tăng cường)**
+
+- **Trong `SoftActorCriticAgent`**:
+  - `gamma = 0.99`: hệ số chiết khấu (tầm nhìn dài/ngắn của agent).
+  - `tau = 0.005`: tốc độ soft-update cho mạng value target.
+  - `batch_size = 32`: số mẫu mỗi lần train từ replay buffer.
+  - `reward_scale = 10`: nhân reward lên trước khi tính target Q → ảnh hưởng scale của Q-values.
+  - Learning rates (actor, value, critic): các `lr` trong các `Adam` optimizer – thuần ML.
+
+- **Trong `neural_networks.py`**:
+  - Kiến trúc `GraphEncoder`:
+    - `n_layers`, `dim_h`, `heads` của GAT/GIN → quyết định **capacity mô hình GNN**.
+  - Kiến trúc các MLP:
+    - `StateValueNetwork`, `ActionValueNetwork`, `PolicyNetwork`:
+      - Kích thước hidden, số lớp → độ sâu/rộng mạng (thuần ML).
+
+- **Action space (MultiDiscrete)** – phía ML:
+  - Cách “gói” action thành 5 chiều `[a0, a1, a2, a3, a4]` và dùng `MultiCategoricalDistribution`:
+    - Ảnh hưởng tới **cách policy sinh hành động**,
+    - Còn tập lựa chọn cụ thể (allowed_atoms, max_atom, bond types) là phía **hoá học**.
+
+#### 10.3. Nhóm tham số **pipeline / thực nghiệm**
+
+- **`n_episodes`** trong `main.py`:
+  - Số episode huấn luyện:
+    - Tham số **thực nghiệm/hậu cần**: càng lớn → học lâu hơn, kết quả tiềm năng tốt hơn nhưng tốn thời gian.
+
+- **Ngưỡng chọn phân tử “tốt” cho `top`**:
+  - Ví dụ trong code: `Chem.QED.qed(env.get_final_mol()) > 0.79`.
+  - Đây là **ngưỡng thực nghiệm**:
+    - 0.79 là lựa chọn tương đối tuỳ ý; bạn có thể nâng lên (ít nhưng rất “drug-like”) hoặc hạ xuống (nhiều candidate hơn).
+
+- **Cách log/ghi kết quả**:
+  - Hiện đang chỉ lưu `scores`, `mols`, `top`, `actor_loss` trong bộ nhớ.
+  - Bạn có thể thêm:
+    - Ghi ra file (`.csv`, `.smi`, ...),
+    - Log thêm info từ `info` của env (reward_valid, reward_qed, reward_structure) để phân tích.
+
+---
+
+### 11. Setup và chạy pipeline
+
+#### 11.1. Yêu cầu hệ thống
+
+- **Python**: 3.9 trở lên (khuyến nghị 3.10 hoặc 3.11).
+- **Hệ điều hành**: Linux, macOS, Windows (RDKit có thể cần cài thêm trên Windows).
+
+#### 11.2. Cài đặt thư viện
+
+**Bước 1 – Tạo môi trường ảo (khuyến nghị):**
+
+```bash
+python -m venv venv
+source venv/bin/activate   # Linux/macOS
+# hoặc: venv\Scripts\activate   # Windows
+```
+
+**Bước 2 – Cài PyTorch (tuỳ theo CPU/GPU):**
+
+```bash
+# CPU only
+pip install torch
+
+# GPU (CUDA 11.8)
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# GPU (CUDA 12.1)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+
+**Bước 3 – Cài các thư viện còn lại:**
+
+```bash
+pip install -r requirements.txt
+```
+
+**Lưu ý**:
+- `torch-geometric` phụ thuộc phiên bản PyTorch; nếu lỗi, xem [PyTorch Geometric install](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
+- **RDKit**: trên một số hệ thống cần cài riêng, ví dụ:
+  - `conda install -c conda-forge rdkit` (nếu dùng conda),
+  - hoặc `pip install rdkit` (thường đủ trên Linux/macOS).
+
+#### 11.3. Cấu trúc thư mục
+
+```
+Geom-SAC/
+├── GeomSAC/
+│   ├── main.py           # Điểm vào chạy pipeline
+│   ├── MolGraphEnv.py     # Môi trường RL
+│   ├── agent.py          # Agent SAC
+│   ├── neural_networks.py # GNN + mạng SAC
+│   ├── buffer.py         # Replay buffer
+│   └── utils.py          # Tiện ích hoá học
+├── requirements.txt
+├── GeomSAC_tong_quan_vi.md
+└── README.md
+```
+
+#### 11.4. Câu lệnh chạy
+
+**Chạy từ thư mục gốc project:**
+
+```bash
+cd /path/to/Geom-SAC
+python -m GeomSAC.main
+```
+
+**Hoặc chạy từ trong thư mục `GeomSAC`:**
+
+```bash
+cd Geom-SAC/GeomSAC
+python main.py
+```
+
+> **Lưu ý**: `main.py` dùng `from MolGraphEnv import *`, `from agent import *` nên cần chạy từ đúng thư mục để Python tìm được các module. Nếu chạy `python main.py` từ `GeomSAC/`, cần đảm bảo thư mục hiện tại nằm trong `sys.path` (thường là mặc định khi chạy từ `GeomSAC/`).
+
+**Chạy với số episode ít (test nhanh):**
+
+Sửa trong `main.py`:
+
+```python
+n_episodes = 100  # thay vì 5000
+```
+
+rồi chạy lại `python main.py`.
+
+#### 11.5. File `requirements.txt`
+
+Nội dung mẫu (đã tạo trong project):
+
+```text
+# Geom-SAC dependencies
+# Python >= 3.9 recommended
+
+# Core
+numpy>=1.21.0
+gymnasium>=0.29.0
+
+# Deep learning
+torch>=2.0.0
+torch-geometric>=2.4.0
+
+# Reinforcement learning (dùng cho MultiCategoricalDistribution)
+stable-baselines3>=2.0.0
+
+# Chemistry
+rdkit>=2023.3.1
+```
+
+#### 11.6. Xử lý lỗi thường gặp
+
+| Lỗi | Gợi ý xử lý |
+|-----|-------------|
+| `ModuleNotFoundError: No module named 'rdkit'` | Cài RDKit: `pip install rdkit` hoặc `conda install -c conda-forge rdkit` |
+| `ModuleNotFoundError: No module named 'torch_geometric'` | Cài PyTorch trước, sau đó `pip install torch-geometric` |
+| `ImportError` từ `utils` (thiếu `copy`, `Chem`) | Thêm vào đầu `utils.py`: `import copy` và `from rdkit import Chem` |
+| Lỗi CUDA / GPU | Chạy với CPU: cài `torch` bản CPU-only |
+| `dgl` không tìm thấy | Chỉ cần khi dùng `frame_work='dgl'`; mặc định dùng `'pyg'` nên có thể bỏ qua |
+
+---
+
