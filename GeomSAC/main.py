@@ -16,7 +16,7 @@ if __name__ == "__main__":
     mols = []
     top = []
     actor_loss = []
-    n_episodes = 5000
+    n_episodes = 100
     ref_mol = Chem.MolFromSmiles('CC(=CCC1=CC2=C(C(=C1OC)O)C(=O)C3=C(O2)C=CC(=C3)O)C')
 
     logger.info("Starting training for %d episodes", n_episodes)
