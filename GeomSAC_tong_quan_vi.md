@@ -1,5 +1,52 @@
 ## Tổng quan Geom-SAC (tiếng Việt)
 
+### Sơ đồ pipeline chính
+
+```mermaid
+flowchart LR
+  subgraph INPUT[" "]
+    I1[SMILES đầu vào]
+    I2[Ref mol]
+  end
+
+  subgraph ENV["1. MÔI TRƯỜNG"]
+    E1[Observation]
+    E2[Thực thi action]
+    E3[Kiểm tra]
+    E4[Reward]
+  end
+
+  subgraph AGENT["2. AGENT"]
+    A1[GraphEncoder: GAT → GIN → pool → MLP]
+    A2[Policy]
+    A3[Critic V, Q₁, Q₂]
+    A4[ReplayBuffer]
+  end
+
+  subgraph LOOP["3. VÒNG LẶP"]
+    L1[Reset / chọn init_mol]
+    L2[Step: action → step → train]
+    L3[Thu thập scores, mols, top]
+  end
+
+  INPUT --> ENV
+  ENV -->|observation| AGENT
+  AGENT -->|action| ENV
+  LOOP --> ENV
+  LOOP --> AGENT
+  ENV -->|reward, done| LOOP
+```
+
+**Thành phần chính và thành phần con:**
+
+| Khối lớn | Thành phần con |
+|----------|----------------|
+| **1. Môi trường** | Observation (đồ thị: node, edge, feature); Thực thi action (thêm nguyên tử, thêm/sửa/xóa bond, nối mảnh); Kiểm tra (valency, chemical validity, stereo); Tính reward (QED, similarity, validity). |
+| **2. Agent** | **GraphEncoder**: GAT → GIN → global_add_pool → MLP (đồ thị → embedding); **Policy** (actor): embedding → action; **Critic**: V(s), Q₁(s,a), Q₂(s,a); **ReplayBuffer**: lưu (s, a, r, s′, done). |
+| **3. Vòng lặp** | Mỗi episode: chọn phân tử đầu vào, reset env; Trong episode: lặp bước (agent chọn action → env.step → add buffer → agent.train); Thu thập kết quả (scores, mols, top). |
+
+---
+
 ### TL;DR
 
 - **Bạn đang có gì**: Một agent SAC + GNN sinh / tối ưu phân tử 3D, code đã viết sẵn.
@@ -99,6 +146,38 @@
 - **GraphEncoder**:
   - Nhận `state` (đồ thị PyG) → qua `GAT` rồi `GIN` → global pooling → MLP → ra **vector embedding** kích thước cố định (ví dụ 128).
   - Đây là biểu diễn của phân tử mà các mạng tiếp theo (actor/critic) sử dụng.
+
+  **GAT + GIN dùng để làm gì?**  
+  Môi trường trả về **observation** dạng đồ thị (số nút, cạnh thay đổi theo phân tử), trong khi policy và critic là MLP cần **đầu vào có kích thước cố định**. GAT và GIN chính là bước **chuyển đồ thị thành embedding** — một vector số có chiều cố định — để mô hình “hiểu” được cấu trúc phân tử (nguyên tử, liên kết, tính chất) và từ đó quyết định action tiếp theo. Tóm lại: *observation (đồ thị) → GAT + GIN → embedding → policy/critic*.
+
+  **GAT là gì (trực quan)?**  
+  GAT (Graph Attention Network) dùng **attention**: khi mỗi nguyên tử (nút) cập nhật trạng thái của mình, nó không coi mọi nguyên tử kề cạnh như nhau, mà **gán trọng số** (học được) cho từng “hàng xóm”. Ví dụ trong phân tử có nhóm carbonyl (C=O): nguyên tử **O** có thể được GAT cho trọng số cao hơn so với một C bão hòa xa xôi — vì O ảnh hưởng mạnh đến tính chất/khả năng phản ứng. Nói ngắn: GAT trả lời câu hỏi *“trong ngữ cảnh này, nguyên tử/liên kết nào quan trọng hơn?”* và tạo ra biểu diễn giàu ngữ cảnh.
+
+  **GIN là gì (trực quan)?**  
+  GIN (Graph Isomorphism Network) **không dùng attention**: nó gộp thông tin từ hàng xóm theo cách đều đặn (thường là tổng), kèm một hệ số học được cho chính nút đó. Mục tiêu thiết kế là **phân biệt được các đồ thị có cấu trúc khác nhau**. Ví dụ hóa học: hai phân tử **benzene** (vòng 6 cạnh, liên kết thơm) và **cyclohexane** (vòng 6 cạnh, toàn liên kết đơn) — đồ thị có cùng “hình dạng” (6 nút, 6 cạnh) nhưng loại liên kết khác nhau; GIN (với feature nút/cạnh phù hợp) giúp embedding phân biệt được hai cấu trúc đó. Nói ngắn: GIN trả lời *“đồ thị này có cấu trúc gì, có khác đồ thị kia không?”*.
+
+  **Tại sao GAT trước, GIN sau?**  
+  - **GAT trước**: Đồ thị thô (node/edge features) trước tiên cần được “nâng cấp” thành biểu diễn **có ngữ cảnh** — nguyên tử/liên kết nào quan trọng trong phân tử này. GAT làm đúng việc đó, cho ra một đồ thị ẩn (hidden features) giàu ý nghĩa hơn.  
+  - **GIN sau**: Trên nền biểu diễn đã có ngữ cảnh đó, GIN đảm nhiệm việc **tổng hợp và phân biệt cấu trúc** một cách ổn định (có cơ sở lý thuyết về sức mạnh phân biệt đồ thị). Kết quả sau global pooling là embedding vừa “biết trọng tâm” (nhờ GAT), vừa “nhạy với cấu trúc” (nhờ GIN), phù hợp để policy/critic đưa ra quyết định action.
+
+  **GAT “biết” đâu quan trọng bằng cách nào?**  
+  GAT không được lập trình sẵn “cái này quan trọng, cái kia không”. Tham số attention **học từ huấn luyện**: gradient (từ reward RL) cập nhật các trọng số sao cho biểu diễn dẫn đến action tốt (reward cao) được ưu tiên. **Gán sai** thì trong quá trình train loss cao, gradient sẽ chỉnh dần; mức độ “đúng” phụ thuộc chất lượng reward và dữ liệu.
+
+  **Vai trò tóm tắt GAT vs GIN**  
+  - **GAT**: tạo cách gán trọng số (và học cách gán) → embedding có “trọng tâm” → RL dùng embedding đó để đưa ra **action tiếp theo**.  
+  - **GIN**: làm cho embedding **phân biệt được** các phân tử (đồ thị) **khác nhau** về cấu trúc — tức một bước xử lý để RL **tránh nhầm** hai phân tử khác bản chất là giống nhau.
+
+  **Input và output của GIN**  
+  - **Input**: (1) Node features = **output của GAT** `h1` (shape `[số_nút, dim_h]`), (2) **Cấu trúc đồ thị** `edge_index` (không đổi).  
+  - **Output**: **Per-node embeddings** `h2` (shape `[số_nút, dim_h]`). GIN **không** trả ra nhãn “giống/khác”; nó trả ra **một biểu diễn** cho đồ thị đó. Embedding **cả phân tử** là **sau bước pool** (ví dụ `global_add_pool(h2)`) → một vector; **phân biệt hai phân tử** = so sánh hai vector đó (cấu trúc khác → embedding khác).
+
+  **Làm sao embedding ít bị lẫn với phân tử khác?**  
+  - **Thiết kế GIN**: Phép gộp (aggregation) của GIN được thiết kế **injective** (hai multiset hàng xóm khác nhau → vector khác nhau), với sức mạnh ít nhất bằng Weisfeiler–Lehman (WL); cấu trúc khác → biểu diễn khác.  
+  - **Học**: Khi hai phân tử gần giống nhưng khác bản chất mà embedding lại quá giống → policy có thể hành xử sai → reward kém → gradient đẩy mạng chỉnh để **hai embedding tách xa nhau** khi cần phân biệt.  
+  - **Pool**: GIN ra per-node → `global_add_pool` gộp thành một vector cho cả đồ thị; vector đó nhạy với cấu trúc nhờ GIN và được tinh chỉnh bởi training.
+
+  **GIN như injective encoding**  
+  GIN bản chất là một dạng **injective encoding/embedding**: thiết kế đảm bảo **cấu trúc khác → embedding khác** (ít nhất trong phạm vi sức mạnh của WL). Lưu ý: WL không phân biệt được mọi cặp đồ thị không đẳng cấu; trong thực tế đồ thị phân tử, GIN thường đủ để coi như embedding ít bị trùng cho phần lớn trường hợp.
 
 - **Mạng trong SAC**:
   - `StateValueNetwork` (`V(s)`): ước lượng giá trị của state.
@@ -315,6 +394,16 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
     - Khả năng nhúng 3D, ổn định cấu trúc,
     - Thời gian tính toán RDKit (embed, MMFF).
 
+- **`max_action`** (mặc định 130):
+  - Số bước tối đa trong một episode; cũng dùng làm ngưỡng để dừng sớm khi `invalid_actions` vượt quá.
+  - Tăng → episode dài hơn, phân tử có thể phức tạp hơn; giảm → chạy nhanh, phân tử đơn giản hơn.
+
+- **`min_action`** (mặc định 21):
+  - Trong code được lưu nhưng không dùng trực tiếp trong điều kiện dừng; có thể tận dụng nếu muốn ép số bước tối thiểu.
+
+- **`frame_work`** (`'pyg'` hoặc `'dgl'`):
+  - Cách biểu diễn observation: PyTorch Geometric (`'pyg'`) hoặc DGL. Mặc định `'pyg'`; đổi `'dgl'` cần cài `dgl` và đảm bảo `get_observation` trả đúng format.
+
 - **`reward_type`**:
   - Hiện đang là `"qed"`, tức reward cuối cùng ưu tiên **QED (drug-likeness)**.
   - Nếu mở rộng, có thể thêm các kiểu reward khác như logP, activity score, multi-objective, v.v.
@@ -324,19 +413,23 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
 
 #### 10.2. Nhóm tham số **ML/RL (học máy, học tăng cường)**
 
-- **Trong `SoftActorCriticAgent`**:
+- **Trong `SoftActorCriticAgent`** (`agent.py`):
   - `gamma = 0.99`: hệ số chiết khấu (tầm nhìn dài/ngắn của agent).
   - `tau = 0.005`: tốc độ soft-update cho mạng value target.
   - `batch_size = 32`: số mẫu mỗi lần train từ replay buffer.
   - `reward_scale = 10`: nhân reward lên trước khi tính target Q → ảnh hưởng scale của Q-values.
-  - Learning rates (actor, value, critic): các `lr` trong các `Adam` optimizer – thuần ML.
+  - **Learning rates**: `lr_actor = 0.003`, `lr_v = lr_q1 = lr_q2 = 0.003` (có thể chỉnh riêng từng optimizer).
+
+- **Replay buffer** (`buffer.py`):
+  - `maxlen = 500`: dung lượng tối đa của replay buffer (số transition lưu). Tăng nếu muốn học ổn định hơn trên nhiều mẫu; giảm nếu tiết kiệm bộ nhớ.
 
 - **Trong `neural_networks.py`**:
-  - Kiến trúc `GraphEncoder`:
-    - `n_layers`, `dim_h`, `heads` của GAT/GIN → quyết định **capacity mô hình GNN**.
-  - Kiến trúc các MLP:
-    - `StateValueNetwork`, `ActionValueNetwork`, `PolicyNetwork`:
-      - Kích thước hidden, số lớp → độ sâu/rộng mạng (thuần ML).
+  - Kiến trúc **GraphEncoder**:
+    - `n_layers = 1`: số lớp GAT/GIN (có thể tăng để tăng độ sâu).
+    - `dim_h = 128`: kích thước ẩn (đầu ra GAT/GIN, input MLP).
+    - `heads = 4`: số head attention của GAT.
+  - Kiến trúc các MLP (StateValueNetwork, ActionValueNetwork, PolicyNetwork):
+    - `dim_h = 128`, các tầng 64 → có thể chỉnh kích thước hidden, số lớp.
 
 - **Action space (MultiDiscrete)** – phía ML:
   - Cách “gói” action thành 5 chiều `[a0, a1, a2, a3, a4]` và dùng `MultiCategoricalDistribution`:
@@ -359,6 +452,31 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
   - Bạn có thể thêm:
     - Ghi ra file (`.csv`, `.smi`, ...),
     - Log thêm info từ `info` của env (reward_valid, reward_qed, reward_structure) để phân tích.
+
+#### Bảng tổng kết: Các tham số có thể thay đổi được
+
+| Tham số | Nhóm | Vị trí (file) | Giá trị mặc định / ví dụ | Mô tả ngắn |
+|--------|------|----------------|---------------------------|------------|
+| **Tập SMILES đầu vào** | Hoá học | `main.py` | List 1 SMILES | Pool phân tử xuất phát mỗi episode. |
+| **`reference_mol`** | Hoá học | `main.py` | 1 Mol (từ SMILES) | Phân tử mục tiêu để tính similarity. |
+| **`target_sim`** | Hoá học | `main.py` → env | `1` | Mức similarity mục tiêu với ref. |
+| **`allowed_atoms`** | Hoá học | `MolGraphEnv.py` | `["C","Cl","F","I","K","N","Na","O","S","Br"]` | Nguyên tố được phép thêm vào phân tử. |
+| **`max_atom`** | Hoá học | `MolGraphEnv.py` / `main.py` | `35` (env), `40` (main) | Số nguyên tử tối đa trong một phân tử. |
+| **`max_action`** | Hoá học / Pipeline | `MolGraphEnv.py` | `130` | Số bước tối đa mỗi episode; ngưỡng dừng sớm theo invalid_actions. |
+| **`min_action`** | Hoá học | `MolGraphEnv.py` | `21` | Lưu trong env; có thể dùng cho logic số bước tối thiểu. |
+| **`reward_type`** | Hoá học | `MolGraphEnv.py` | `"qed"` | Loại reward cuối (hiện chỉ QED). |
+| **`frame_work`** | Pipeline | `MolGraphEnv.py`, `main.py` | `'pyg'` | Đồ thị: `'pyg'` (PyG) hoặc `'dgl'`. |
+| **`n_episodes`** | Pipeline | `main.py` | `5000` | Số episode huấn luyện. |
+| **Ngưỡng QED cho `top`** | Pipeline | `main.py` | `0.79` | Chỉ lưu phân tử có QED > ngưỡng này. |
+| **`gamma`** | ML/RL | `agent.py` | `0.99` | Hệ số chiết khấu (discount). |
+| **`tau`** | ML/RL | `agent.py` | `0.005` | Hệ số soft-update cho V_target. |
+| **`batch_size`** | ML/RL | `agent.py`, `buffer.py` | `32` | Số mẫu mỗi lần train từ buffer. |
+| **`reward_scale`** | ML/RL | `agent.py` | `10` | Nhân reward khi tính target Q. |
+| **`lr_actor`, `lr_v`, `lr_q1`, `lr_q2`** | ML/RL | `agent.py` | `0.003` | Learning rate cho actor và từng critic. |
+| **`maxlen` (replay buffer)** | ML/RL | `buffer.py` | `500` | Số transition tối đa trong replay buffer. |
+| **`n_layers`** (GAT/GIN) | ML/RL | `neural_networks.py` (GraphEncoder) | `1` | Số lớp GAT và GIN. |
+| **`dim_h`** | ML/RL | `neural_networks.py` | `128` | Kích thước ẩn (GAT, GIN, MLP). |
+| **`heads`** (GAT) | ML/RL | `neural_networks.py` (GraphEncoder) | `4` | Số head attention của GAT. |
 
 ---
 
