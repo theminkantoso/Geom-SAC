@@ -1,16 +1,18 @@
 # Geom-SAC dependencies
-# Python >= 3.10 recommended
+# Note: versions chosen to be close to the likely
+# stack when the original repo was implemented,
+# while keeping dependencies mutually compatible.
 
 # Core
-numpy>=1.24.0
-gymnasium>=0.28.1,<0.30
+numpy>=1.22,<1.25
+gymnasium==0.29.1
 
 # Deep learning
-torch==2.7.0
-torch-geometric==2.7.0
+torch==2.2.0
+torch-geometric==2.4.0
 
 # Reinforcement learning (dùng cho MultiCategoricalDistribution)
 stable-baselines3==2.3.2
 
 # Chemistry
-rdkit==2025.9.5
+rdkit==2023.9.5
