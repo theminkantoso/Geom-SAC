@@ -1,10 +1,13 @@
 import copy
 from rdkit import Chem
+from rdkit.Chem import Descriptors
 
 
 def convert_radical_electrons_to_hydrogens(mol):
     m = copy.deepcopy(mol)
-    if Chem.Descriptors.NumRadicalElectrons(m) == 0:  # not a radical
+    # Use Descriptors.NumRadicalElectrons directly; some RDKit builds
+    # do not expose Chem.Descriptors as an attribute.
+    if Descriptors.NumRadicalElectrons(m) == 0:  # not a radical
         return m
     else:  # a radical
         for a in m.GetAtoms():

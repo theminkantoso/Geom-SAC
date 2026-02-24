@@ -384,18 +384,16 @@ class MolecularGraphEnv(gym.Env, ABC):
         n = copy.deepcopy(self.reference_mol)
         m = copy.deepcopy(self.mol_g)
 
-        # NOTE (local change, commented out to keep original paper behavior):
-        # In newer RDKit versions, calling Morgan fingerprints on molecules
-        # whose ring info is not initialized can raise:
-        # "Pre-condition Violation: RingInfo not initialized".
-        # A robust fix is to sanitize copies before fingerprinting, e.g.:
-        #
-        #   Chem.SanitizeMol(n)
-        #   Chem.SanitizeMol(m)
-        #
-        # but this is left commented to preserve the exact logic of the
-        # original repository. If you see RingInfo errors, you can safely
-        # re‑enable the sanitization here.
+        # Local compatibility fix for newer RDKit versions:
+        # ensure ring information and other properties are initialized
+        # on the copied molecules before computing Morgan fingerprints.
+        try:
+            Chem.SanitizeMol(n)
+            Chem.SanitizeMol(m)
+        except Exception:
+            # If sanitization fails, fall back to zero similarity
+            # instead of triggering RingInfo pre-condition violations.
+            return 0.0
 
         fp_n = AllChem.GetMorganFingerprint(n, radius=2)
         fp_m = AllChem.GetMorganFingerprint(m, radius=2)
