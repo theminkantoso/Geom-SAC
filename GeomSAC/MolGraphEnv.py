@@ -1,4 +1,5 @@
 import copy
+import logging
 from abc import ABC
 from itertools import product
 
@@ -17,6 +18,8 @@ from utils import convert_radical_electrons_to_hydrogens
 
 class MolecularGraphEnv(gym.Env, ABC):
     metadata = {"render.modes": ["human"]}
+
+    logger = logging.getLogger("GeomSAC.Env")
 
     def __init__(self, mol_g=None, max_atom=35, reward_type="qed", min_action=21, max_action=130,
                  allowed_atoms=["C", "Cl", "F", "I", "K", "N", "Na", "O", "S", "Br"], reference_mol=None,
@@ -57,6 +60,14 @@ class MolecularGraphEnv(gym.Env, ABC):
             [len(self.possible_atom_types), self.max_atom, self.max_atom, len(self.possible_bond_types), 4, ])
         self.stop = False
 
+        self.logger.info(
+            "Initialized MolecularGraphEnv: max_atom=%d, max_action=%d, reward_type=%s, allowed_atoms=%s",
+            self.max_atom,
+            self.max_action,
+            self.reward_type,
+            ",".join(self.allowed_atoms),
+        )
+
     def step(self, action):
         info = {}
         mol_old = copy.deepcopy(self.mol_g)
@@ -64,6 +75,15 @@ class MolecularGraphEnv(gym.Env, ABC):
 
         stopping_cond = (self.counter >= self.max_action or self.invalid_actions > self.max_action)
         self.stop = True if stopping_cond else False
+
+        self.logger.debug(
+            "Step %d: action=%s, num_atoms=%d, invalid_actions=%d, stopping_cond=%s",
+            self.counter,
+            action,
+            self.mol_g.GetNumAtoms(),
+            self.invalid_actions,
+            stopping_cond,
+        )
 
         if self.mol_g.GetNumAtoms() <= self.max_atom:
             self._add_atom(action[0])
