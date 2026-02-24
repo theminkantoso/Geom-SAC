@@ -601,3 +601,192 @@ rdkit>=2023.3.1
 
 ---
 
+### 12. Các chỉnh sửa cục bộ khi chạy trên máy local
+
+Phần này ghi lại các chỉnh sửa mình đã thực hiện trên mã nguồn gốc của repo/paper để:
+- Chạy được với môi trường Python/RDKit/Gymnasium hiện tại.
+- Thêm log/giải thích giúp quan sát quá trình huấn luyện dễ hơn.
+
+#### 12.1. Cập nhật `requirements.txt`
+
+So với nội dung mẫu ở mục 11.5, file `requirements.txt` hiện tại đã được cố định version cụ thể hơn để tránh xung đột và lỗi build:
+
+```text
+# Geom-SAC dependencies
+# Note: versions chosen to be close to the likely
+# stack when the original repo was implemented,
+# while keeping dependencies mutually compatible.
+
+# Core
+# Use a NumPy version with prebuilt wheels for recent Python versions (>=3.11).
+numpy>=1.26,<2.0
+gymnasium==0.29.1
+
+# Deep learning
+torch==2.2.0
+torch-geometric==2.4.0
+
+# Reinforcement learning (dùng cho MultiCategoricalDistribution)
+stable-baselines3==2.3.2
+
+# Chemistry
+rdkit==2023.9.5
+```
+
+**Lý do:**
+
+- Tránh xung đột `gymnasium` với `stable-baselines3` (SB3 2.3.2 yêu cầu `gymnasium>=0.28.1,<0.30`).
+- Dùng `numpy>=1.26,<2.0` để có wheel sẵn cho Python 3.12, tránh lỗi “Getting requirements to build wheel did not run successfully”.
+- Chọn `rdkit==2023.9.5` thay vì bản 2025.x quá mới (nhiều deprecation + nghiêm hơn), nhưng vẫn đủ mới để cài được trên môi trường hiện tại.
+
+#### 12.2. Vá `RingInfo not initialized` trong `GeomSAC/MolGraphEnv.py`
+
+Trong hàm `get_similarity` gốc, tác giả gọi:
+
+- `AllChem.GetMorganFingerprint(n, radius=2)`
+- `AllChem.GetMorganFingerprint(m, radius=2)`
+
+trên bản sao của `reference_mol` và `mol_g` mà không đảm bảo đã được `SanitizeMol`. Với RDKit mới, điều này dễ gây lỗi:
+
+- `Pre-condition Violation`
+- `RingInfo not initialized`
+
+**Chỉnh sửa đã làm:**
+
+- Thêm bước sanitize trước khi tính fingerprint:
+
+```python
+def get_similarity(self):
+    n = copy.deepcopy(self.reference_mol)
+    m = copy.deepcopy(self.mol_g)
+
+    # Local compatibility fix for newer RDKit versions:
+    # ensure ring information and other properties are initialized
+    # on the copied molecules before computing Morgan fingerprints.
+    try:
+        Chem.SanitizeMol(n)
+        Chem.SanitizeMol(m)
+    except Exception:
+        # If sanitization fails, fall back to zero similarity
+        # instead of triggering RingInfo pre-condition violations.
+        return 0.0
+
+    fp_n = AllChem.GetMorganFingerprint(n, radius=2)
+    fp_m = AllChem.GetMorganFingerprint(m, radius=2)
+    curr_sim = DataStructs.TanimotoSimilarity(fp_n, fp_m)
+
+    return 1 - np.sqrt(abs(self.target_sim - curr_sim) / (self.target_sim + curr_sim) ** 2)
+```
+
+**Lý do:**
+
+- Đây là cách RDKit khuyến cáo: luôn sanitize trước khi dùng Morgan fingerprint để đảm bảo `RingInfo` và các thuộc tính khác đã được khởi tạo.
+- Giữ nguyên công thức similarity của paper, chỉ thêm lớp “an toàn” để không bị crash trên RDKit bản mới.
+
+#### 12.3. Sửa `Chem.Descriptors` trong `GeomSAC/utils.py`
+
+Code gốc dùng:
+
+```python
+if Chem.Descriptors.NumRadicalElectrons(m) == 0:
+```
+
+Nhưng với RDKit phiên bản hiện tại trên máy, `Chem.Descriptors` **không tồn tại** (module `Descriptors` nằm trong `rdkit.Chem`, không được gắn lại vào thuộc tính `Chem.Descriptors`), dẫn tới:
+
+- `module 'rdkit.Chem' has no attribute 'Descriptors'`
+
+**Chỉnh sửa đã làm:**
+
+```python
+import copy
+from rdkit import Chem
+from rdkit.Chem import Descriptors
+
+
+def convert_radical_electrons_to_hydrogens(mol):
+    m = copy.deepcopy(mol)
+    # Use Descriptors.NumRadicalElectrons directly; some RDKit builds
+    # do not expose Chem.Descriptors as an attribute.
+    if Descriptors.NumRadicalElectrons(m) == 0:  # not a radical
+        return m
+    else:  # a radical
+        for a in m.GetAtoms():
+            num_radical_e = a.GetNumRadicalElectrons()
+            if num_radical_e > 0:
+                a.SetNumRadicalElectrons(0)
+                a.SetNumExplicitHs(num_radical_e)
+    return m
+```
+
+**Lý do:**
+
+- Dùng đúng API chính thức của RDKit (`from rdkit.Chem import Descriptors`) để tương thích với nhiều bản build khác nhau.
+
+#### 12.4. Thêm logging chi tiết trong `GeomSAC/main.py` và `GeomSAC/MolGraphEnv.py`
+
+**Trong `main.py`:**
+
+- Thêm cấu hình logging:
+
+```python
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+)
+logger = logging.getLogger("GeomSAC")
+```
+
+- Thay `print("steps: ", steps)` bằng các log có cấu trúc:
+  - Khi bắt đầu training: tổng số episode.
+  - Mỗi episode: log reset env, reward tổng, số bước.
+  - Log QED của phân tử cuối cùng (full mol + fragment lớn nhất).
+
+- Thêm **summary cuối training**:
+  - Trung bình reward và best reward.
+  - Liệt kê một số phân tử cuối cùng (`mols`) kèm QED:
+
+    ```text
+    Mol #1: <SMILES> | QED=0.8123
+    ```
+
+  - Liệt kê một số phân tử “top” (`top`) với QED > 0.79, kèm QED recompute từ SMILES:
+
+    ```text
+    Top #1: <SMILES> | QED=0.8450
+    ```
+
+**Trong `MolGraphEnv.py`:**
+
+- Thêm logger lớp:
+
+```python
+class MolecularGraphEnv(gym.Env, ABC):
+    metadata = {"render.modes": ["human"]}
+    logger = logging.getLogger("GeomSAC.Env")
+```
+
+- Khi khởi tạo env, log các tham số chính (max_atom, max_action, reward_type, allowed_atoms).
+- Trong `step`, log (ở mức DEBUG) action, số atom hiện tại, số invalid_actions, điều kiện dừng, giúp dễ debug khi cần.
+
+**Lý do:**
+
+- Dễ theo dõi quá trình huấn luyện hơn là chỉ nhìn raw RDKit warnings.
+- Có thể hạ/raise mức log (INFO/DEBUG) mà không đổi logic thuật toán.
+
+#### 12.5. Diễn giải về các log RDKit “lỗi” nhưng là hành vi mong đợi
+
+Khi agent explore, rất nhiều action sẽ sinh ra phân tử **không hợp lệ hoá học**, ví dụ:
+
+- Valence vượt quá cho phép (`Explicit valence for atom ... is greater than permitted`).
+- Lỗi SMILES parse.
+- Không kekulize được vòng, aromaticity bất thường.
+
+Mã nguồn env xử lý các trường hợp này bằng cách:
+
+- Gọi các hàm như `Chem.SanitizeMol`, `Chem.MolToSmiles`, `Chem.QED.qed` trong `try/except`.
+- Nếu RDKit ném exception, env coi đó là trạng thái invalid, phạt reward và quay về phân tử cũ.
+
+Vì RDKit in các cảnh báo/lỗi nội bộ ra stderr, log nhìn “đáng sợ” nhưng:
+
+- Phần lớn là **tín hiệu cho biết agent đang thử các cấu trúc xấu** (đúng với ý tưởng RL: explore nhiều, reject nhiều).
+- Sau các vá ở 12.2 và 12.3, những lỗi có thể làm chương trình dừng (như `RingInfo not initialized` trong `get_similarity` hay `Chem.Descriptors` không tồn tại) đã được xử lý, nên hiện tại chương trình vẫn chạy bình thường qua nhiều episode.

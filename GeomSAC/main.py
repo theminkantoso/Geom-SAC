@@ -88,3 +88,41 @@ if __name__ == "__main__":
             )
         except Exception as e:
             logger.warning("Episode %d: failed to compute QED/top molecules (%s)", episode + 1, e)
+
+    # --- Training summary ---
+    if scores:
+        avg_reward = float(torch.tensor(scores, dtype=torch.float32).mean())
+        best_reward = float(torch.tensor(scores, dtype=torch.float32).max())
+        logger.info(
+            "Training finished: %d episodes, avg_reward=%.4f, best_reward=%.4f",
+            n_episodes,
+            avg_reward,
+            best_reward,
+        )
+
+    if mols:
+        logger.info("Collected %d final molecules (one per episode). Showing first 5 with QED:", len(mols))
+        for i, smi in enumerate(mols[:5], start=1):
+            try:
+                m = Chem.MolFromSmiles(smi)
+                qed = Chem.QED.qed(m) if m is not None else float("nan")
+                logger.info("Mol #%d: %s | QED=%.4f", i, smi, float(qed))
+            except Exception:
+                logger.info("Mol #%d: %s | QED=nan (failed to compute)", i, smi)
+
+    if top:
+        unique_top = list(dict.fromkeys(top))  # preserve order, remove duplicates
+        logger.info(
+            "Found %d top molecules with QED > 0.79 (unique=%d). Showing first 5 with recomputed QED:",
+            len(top),
+            len(unique_top),
+        )
+        for i, smi in enumerate(unique_top[:5], start=1):
+            try:
+                m = Chem.MolFromSmiles(smi)
+                qed = Chem.QED.qed(m) if m is not None else float("nan")
+                logger.info("Top #%d: %s | QED=%.4f", i, smi, float(qed))
+            except Exception:
+                logger.info("Top #%d: %s | QED=nan (failed to compute)", i, smi)
+    else:
+        logger.info("No molecules reached the QED threshold for 'top' during this run.")
