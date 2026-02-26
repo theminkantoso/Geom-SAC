@@ -367,7 +367,7 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
 
 ### 10. Phân loại các tham số có thể tuỳ chỉnh
 
-Để rõ ràng hơn, chia tham số thành 3 nhóm chính: **hoá học**, **ML/RL**, và **pipeline/thực nghiệm**.
+Để rõ ràng hơn, chia tham số thành 4 nhóm chính: **hoá học**, **ML/RL**, **pipeline/thực nghiệm**, và **config**.
 
 #### 10.1. Nhóm tham số **hoá học**
 
@@ -453,6 +453,20 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
     - Ghi ra file (`.csv`, `.smi`, ...),
     - Log thêm info từ `info` của env (reward_valid, reward_qed, reward_structure) để phân tích.
 
+#### 10.4. Nhóm tham số **config**
+
+- **`chkpt_dir`** (trong `neural_networks.py`):
+  - Thư mục lưu checkpoint của actor, critic V, critic Q. Mặc định `'tmp/GeomSac'`. Đổi khi muốn lưu/load model ở vị trí khác.
+
+- **`device`** (replay buffer, `buffer.py`):
+  - Thiết bị lưu và stack tensor khi sample (hiện `'cpu'`). Có thể đổi nếu muốn đưa batch lên GPU.
+
+- **Số phân tử in ra trong summary** (`main.py`):
+  - Số dòng SMILES được in cho `mols` và `top` ở cuối run (hiện `mols[:5]`, `unique_top[:5]` → tối đa 5). Chỉ ảnh hưởng đầu ra console, không đổi kết quả train.
+
+- **Hệ số reward (trong `step` và cuối episode)** (`MolGraphEnv.py`):
+  - Nhiều hằng số cấu hình reward: thưởng/phạt valency và stereo (`± 1/max_action`), hệ số QED từng bước (`(1.5 - ...)/20`), reward cuối (reward_valid, reward_geom, reward_qed nhân 2, similarity). Chỉnh để cân bằng giữa validity, QED và similarity.
+
 #### Bảng tổng kết: Các tham số có thể thay đổi được
 
 | Tham số | Nhóm | Vị trí (file) | Giá trị mặc định / ví dụ | Mô tả ngắn |
@@ -465,6 +479,7 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
 | **`max_action`** | Hoá học / Pipeline | `MolGraphEnv.py` | `130` | Số bước tối đa mỗi episode; ngưỡng dừng sớm theo invalid_actions. |
 | **`min_action`** | Hoá học | `MolGraphEnv.py` | `21` | Lưu trong env; có thể dùng cho logic số bước tối thiểu. |
 | **`reward_type`** | Hoá học | `MolGraphEnv.py` | `"qed"` | Loại reward cuối (hiện chỉ QED). |
+| **Hệ số reward (step & cuối episode)** | Config | `MolGraphEnv.py` | Nhiều hằng số (valency ±1/max_action, QED, reward_valid/geom/qed, similarity) | Cân bằng validity, QED, similarity. |
 | **`frame_work`** | Pipeline | `MolGraphEnv.py`, `main.py` | `'pyg'` | Đồ thị: `'pyg'` (PyG) hoặc `'dgl'`. |
 | **`n_episodes`** | Pipeline | `main.py` | `5000` | Số episode huấn luyện. |
 | **Ngưỡng QED cho `top`** | Pipeline | `main.py` | `0.79` | Chỉ lưu phân tử có QED > ngưỡng này. |
@@ -477,6 +492,11 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
 | **`n_layers`** (GAT/GIN) | ML/RL | `neural_networks.py` (GraphEncoder) | `1` | Số lớp GAT và GIN. |
 | **`dim_h`** | ML/RL | `neural_networks.py` | `128` | Kích thước ẩn (GAT, GIN, MLP). |
 | **`heads`** (GAT) | ML/RL | `neural_networks.py` (GraphEncoder) | `4` | Số head attention của GAT. |
+| **`dim_hidden` (MLP V, Q)** | ML/RL | `neural_networks.py` (StateValueNetwork, ActionValueNetwork) | `64` | Kích thước tầng ẩn thứ hai (128 → 64 → 1). |
+| **`epsilon`** (policy sample) | ML/RL | `neural_networks.py` (PolicyNetwork.sample) | `1e-6` | Hằng số ổn định số học khi sample action (tránh log 0). |
+| **`chkpt_dir`** | Config | `neural_networks.py` | `'tmp/GeomSac'` | Thư mục lưu checkpoint actor / critic V / critic Q. |
+| **`device`** (replay buffer) | Config | `buffer.py` | `'cpu'` | Thiết bị lưu và stack tensor khi buffer.sample(). |
+| **Số phân tử in ra (summary)** | Config | `main.py` | `5` | Số SMILES in cho mols và top ở cuối run (mols[:5], unique_top[:5]). |
 
 ---
 
