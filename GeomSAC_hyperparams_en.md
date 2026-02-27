@@ -16,17 +16,17 @@ Translation of the parameter summary table in section 10 of `GeomSAC_tong_quan_v
 | **`frame_work`** | Pipeline | `MolGraphEnv.py`, `main.py` | `'pyg'` | Graph backend: `'pyg'` (PyTorch Geometric) or `'dgl'`. |
 | **`n_episodes`** | Pipeline | `main.py` | `5000` | Number of training episodes. |
 | **QED threshold for `top`** | Pipeline | `main.py` | `0.79` | Only keeps molecules with QED above this threshold in `top`. |
-| **`gamma`** | ML/RL | `agent.py` | `0.99` | Discount factor. |
-| **`tau`** | ML/RL | `agent.py` | `0.005` | Soft-update factor for the target value network. |
-| **`batch_size`** | ML/RL | `agent.py`, `buffer.py` | `32` | Number of samples per training update from the replay buffer. |
-| **`reward_scale`** | ML/RL | `agent.py` | `10` | Multiplier applied to rewards when computing Q targets. |
-| **`lr_actor`, `lr_v`, `lr_q1`, `lr_q2`** | ML/RL | `agent.py` | `0.003` | Learning rates for the actor and critic networks. |
-| **`maxlen` (replay buffer)** | ML/RL | `buffer.py` | `500` | Maximum number of transitions stored in the replay buffer. |
-| **`n_layers`** (GAT/GIN) | ML/RL | `neural_networks.py` (GraphEncoder) | `1` | Number of GAT and GIN layers. |
-| **`dim_h`** | ML/RL | `neural_networks.py` | `128` | Hidden dimension for GAT, GIN and MLPs. |
-| **`heads`** (GAT) | ML/RL | `neural_networks.py` (GraphEncoder) | `4` | Number of attention heads in GAT. |
-| **`dim_hidden` (MLP V, Q)** | ML/RL | `neural_networks.py` (StateValueNetwork, ActionValueNetwork) | `64` | Hidden size of the second layer in V/Q MLPs (128 → 64 → 1). |
-| **`epsilon`** (policy sample) | ML/RL | `neural_networks.py` (PolicyNetwork.sample) | `1e-6` | Small constant for numerical stability when sampling actions (avoid log 0). |
+| **`gamma`** | ML/RL – Agent | `agent.py` | `0.99` | Discount factor. |
+| **`tau`** | ML/RL – Agent | `agent.py` | `0.005` | Soft-update factor for the target value network. |
+| **`batch_size`** | ML/RL – Agent | `agent.py`, `buffer.py` | `32` | Number of samples per training update from the replay buffer. |
+| **`reward_scale`** | ML/RL – Agent | `agent.py` | `10` | Multiplier applied to rewards when computing Q targets. |
+| **`lr_actor`, `lr_v`, `lr_q1`, `lr_q2`** | ML/RL – Agent | `agent.py` | `0.003` | Learning rates for the actor and critic networks. |
+| **`maxlen` (replay buffer)** | ML/RL – Agent | `buffer.py` | `500` | Maximum number of transitions stored in the replay buffer. |
+| **`n_layers`** (GAT/GIN) | ML/RL – GAT/GIN | `neural_networks.py` (GraphEncoder) | `1` | Number of GAT and GIN layers. |
+| **`dim_h`** | ML/RL – GAT/GIN | `neural_networks.py` | `128` | Hidden dimension for GAT, GIN and MLPs. |
+| **`heads`** (GAT) | ML/RL – GAT | `neural_networks.py` (GraphEncoder) | `4` | Number of attention heads in GAT. |
+| **`dim_hidden` (MLP V, Q)** | ML/RL – Agent (V/Q) | `neural_networks.py` (StateValueNetwork, ActionValueNetwork) | `64` | Hidden size of the second layer in V/Q MLPs (128 → 64 → 1). |
+| **`epsilon`** (policy sample) | ML/RL – Agent (Policy) | `neural_networks.py` (PolicyNetwork.sample) | `1e-6` | Small constant for numerical stability when sampling actions (avoid log 0). |
 | **`chkpt_dir`** | Config | `neural_networks.py` | `'tmp/GeomSac'` | Directory for saving actor / value / critic checkpoints. |
 | **`device`** (replay buffer) | Config | `buffer.py` | `'cpu'` | Device used to store and stack tensors in `ReplayBuffer.sample()`. |
 | **Number of molecules printed (summary)** | Config | `main.py` | `5` | Number of SMILES shown for `mols` and `top` at the end of a run (`mols[:5]`, `unique_top[:5]`). |

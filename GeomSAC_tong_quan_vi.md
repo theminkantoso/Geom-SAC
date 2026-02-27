@@ -483,17 +483,17 @@ Tài liệu này tóm tắt lại các nội dung đã trao đổi:
 | **`frame_work`** | Pipeline | `MolGraphEnv.py`, `main.py` | `'pyg'` | Đồ thị: `'pyg'` (PyG) hoặc `'dgl'`. |
 | **`n_episodes`** | Pipeline | `main.py` | `5000` | Số episode huấn luyện. |
 | **Ngưỡng QED cho `top`** | Pipeline | `main.py` | `0.79` | Chỉ lưu phân tử có QED > ngưỡng này. |
-| **`gamma`** | ML/RL | `agent.py` | `0.99` | Hệ số chiết khấu (discount). |
-| **`tau`** | ML/RL | `agent.py` | `0.005` | Hệ số soft-update cho V_target. |
-| **`batch_size`** | ML/RL | `agent.py`, `buffer.py` | `32` | Số mẫu mỗi lần train từ buffer. |
-| **`reward_scale`** | ML/RL | `agent.py` | `10` | Nhân reward khi tính target Q. |
-| **`lr_actor`, `lr_v`, `lr_q1`, `lr_q2`** | ML/RL | `agent.py` | `0.003` | Learning rate cho actor và từng critic. |
-| **`maxlen` (replay buffer)** | ML/RL | `buffer.py` | `500` | Số transition tối đa trong replay buffer. |
-| **`n_layers`** (GAT/GIN) | ML/RL | `neural_networks.py` (GraphEncoder) | `1` | Số lớp GAT và GIN. |
-| **`dim_h`** | ML/RL | `neural_networks.py` | `128` | Kích thước ẩn (GAT, GIN, MLP). |
-| **`heads`** (GAT) | ML/RL | `neural_networks.py` (GraphEncoder) | `4` | Số head attention của GAT. |
-| **`dim_hidden` (MLP V, Q)** | ML/RL | `neural_networks.py` (StateValueNetwork, ActionValueNetwork) | `64` | Kích thước tầng ẩn thứ hai (128 → 64 → 1). |
-| **`epsilon`** (policy sample) | ML/RL | `neural_networks.py` (PolicyNetwork.sample) | `1e-6` | Hằng số ổn định số học khi sample action (tránh log 0). |
+| **`gamma`** | ML/RL – Agent | `agent.py` | `0.99` | Hệ số chiết khấu (discount). |
+| **`tau`** | ML/RL – Agent | `agent.py` | `0.005` | Hệ số soft-update cho V_target. |
+| **`batch_size`** | ML/RL – Agent | `agent.py`, `buffer.py` | `32` | Số mẫu mỗi lần train từ buffer. |
+| **`reward_scale`** | ML/RL – Agent | `agent.py` | `10` | Nhân reward khi tính target Q. |
+| **`lr_actor`, `lr_v`, `lr_q1`, `lr_q2`** | ML/RL – Agent | `agent.py` | `0.003` | Learning rate cho actor và từng critic. |
+| **`maxlen` (replay buffer)** | ML/RL – Agent | `buffer.py` | `500` | Số transition tối đa trong replay buffer. |
+| **`n_layers`** (GAT/GIN) | ML/RL – GAT/GIN | `neural_networks.py` (GraphEncoder) | `1` | Số lớp GAT và GIN. |
+| **`dim_h`** | ML/RL – GAT/GIN | `neural_networks.py` | `128` | Kích thước ẩn (GAT, GIN, MLP). |
+| **`heads`** (GAT) | ML/RL – GAT | `neural_networks.py` (GraphEncoder) | `4` | Số head attention của GAT. |
+| **`dim_hidden` (MLP V, Q)** | ML/RL – Agent (V/Q) | `neural_networks.py` (StateValueNetwork, ActionValueNetwork) | `64` | Kích thước tầng ẩn thứ hai (128 → 64 → 1). |
+| **`epsilon`** (policy sample) | ML/RL – Agent (Policy) | `neural_networks.py` (PolicyNetwork.sample) | `1e-6` | Hằng số ổn định số học khi sample action (tránh log 0). |
 | **`chkpt_dir`** | Config | `neural_networks.py` | `'tmp/GeomSac'` | Thư mục lưu checkpoint actor / critic V / critic Q. |
 | **`device`** (replay buffer) | Config | `buffer.py` | `'cpu'` | Thiết bị lưu và stack tensor khi buffer.sample(). |
 | **Số phân tử in ra (summary)** | Config | `main.py` | `5` | Số SMILES in cho mols và top ở cuối run (mols[:5], unique_top[:5]). |
